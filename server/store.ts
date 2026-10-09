@@ -92,14 +92,52 @@ export function sniffMime(buf: Buffer): string | undefined {
   return undefined;
 }
 
+/** Duration in seconds from the MP4 `moov/mvhd` box; undefined if it can't be found. */
+export function mp4Duration(buf: Buffer): number | undefined {
+  const findBox = (start: number, end: number, type: string): [number, number] | undefined => {
+    let pos = start;
+    while (pos + 8 <= end) {
+      let size = buf.readUInt32BE(pos);
+      let header = 8;
+      if (size === 1) {
+        if (pos + 16 > end) return undefined;
+        size = Number(buf.readBigUInt64BE(pos + 8));
+        header = 16;
+      } else if (size === 0) {
+        size = end - pos;
+      }
+      if (size < header || pos + size > end) return undefined;
+      if (buf.toString("ascii", pos + 4, pos + 8) === type) return [pos + header, pos + size];
+      pos += size;
+    }
+    return undefined;
+  };
+  try {
+    const moov = findBox(0, buf.length, "moov");
+    const mvhd = moov && findBox(moov[0], moov[1], "mvhd");
+    if (!mvhd) return undefined;
+    const p = mvhd[0];
+    const v1 = buf[p] === 1;
+    const timescale = buf.readUInt32BE(p + (v1 ? 20 : 12));
+    const duration = v1 ? Number(buf.readBigUInt64BE(p + 24)) : buf.readUInt32BE(p + 16);
+    return timescale > 0 && duration > 0 ? Math.round((duration / timescale) * 1000) / 1000 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function saveAsset(data: Buffer, meta: Omit<Asset, "id" | "file" | "mime" | "kind" | "createdAt"> & { mime?: string }): Asset {
   const mime = sniffMime(data) ?? meta.mime;
   if (!mime || !EXT[mime]) throw new Error(`Unsupported media type${mime ? ` ${mime}` : ""}; use JPEG, PNG, WebP or MP4`);
   const id = newId();
   const file = `${id}.${EXT[mime]}`;
   writeFileSync(join(MEDIA_DIR, file), data);
+  // For video, trust the container over whatever the caller reported (xAI reports only the
+  // added seconds for extensions; browsers can't always read uploaded metadata).
+  const duration = mime === "video/mp4" ? (mp4Duration(data) ?? meta.duration) : meta.duration;
   const asset: Asset = {
     ...meta,
+    duration,
     id,
     file,
     mime,

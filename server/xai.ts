@@ -8,6 +8,8 @@ import { getSettings, newId } from "./store";
 
 const BASE_URL = process.env.XAI_BASE_URL ?? "https://api.x.ai";
 export const TEXT_MODEL = process.env.XAI_TEXT_MODEL ?? "grok-4.3";
+/** reasoning_effort for the prompt enhancer; set XAI_TEXT_REASONING= (empty) to omit the field. */
+export const TEXT_REASONING = process.env.XAI_TEXT_REASONING ?? "none";
 export const MOCK = process.argv.includes("--mock") || process.env.XAI_MOCK === "1";
 
 export class XaiError extends Error {
@@ -195,7 +197,8 @@ const mockClient: XaiClient = {
         mime_type: "image/png",
       }));
       const price = body.model === "grok-imagine-image" ? 0.02 : body.model === "grok-imagine-image-quality" ? 0.05 : 0.04;
-      return { data, usage: { cost_in_usd_ticks: Math.round(n * price * TICKS_PER_USD) } };
+      const inputs = body.images ? (body.images as unknown[]).length : body.image ? 1 : 0;
+      return { data, usage: { cost_in_usd_ticks: Math.round((n * price + inputs * 0.01) * TICKS_PER_USD) } };
     }
     if (path.startsWith("/v1/videos/")) {
       const request_id = `mock-${newId()}`;
@@ -219,20 +222,21 @@ const mockClient: XaiClient = {
     if (prompt.includes("[block]")) {
       return { status: 200, json: { status: "done", video: { url: null, duration: 0, respect_moderation: false }, model: job.body.model } };
     }
-    const duration = job.path.endsWith("/extensions")
-      ? 6 + Number(job.body.duration ?? 6)
-      : job.path.endsWith("/edits")
-        ? 6
-        : Number(job.body.duration ?? 8);
+    // Like the real API: an extension reports only the added seconds, but the file is source + extension.
+    const sourceSecs = job.path.endsWith("/extensions") || job.path.endsWith("/edits") ? 6 : 0;
+    const duration = job.path.endsWith("/extensions") ? Number(job.body.duration ?? 6) : job.path.endsWith("/edits") ? sourceSecs : Number(job.body.duration ?? 8);
+    const fileSecs = job.path.endsWith("/extensions") ? sourceSecs + duration : duration;
     const rate = job.body.model === "grok-imagine-video-1.5" ? 0.08 : job.body.model === "grok-imagine-video-1.5-lite" ? 0.02 : 0.05;
+    const inputImages = (job.body.image ? 1 : 0) + (job.body.last_frame ? 1 : 0) + ((job.body.keyframes as unknown[])?.length ?? 0) + ((job.body.reference_images as unknown[])?.length ?? 0);
+    const cost = duration * rate + inputImages * 0.01 + sourceSecs * 0.01;
     return {
       status: 200,
       json: {
         status: "done",
         progress: 100,
         model: job.body.model,
-        video: { url: `mock://${id}?d=${duration}&a=${job.body.aspect_ratio ?? "16:9"}`, duration, respect_moderation: true },
-        usage: { cost_in_usd_ticks: Math.round(duration * rate * TICKS_PER_USD) },
+        video: { url: `mock://${id}?d=${fileSecs}&a=${job.body.aspect_ratio ?? "16:9"}`, duration, respect_moderation: true },
+        usage: { cost_in_usd_ticks: Math.round(cost * TICKS_PER_USD) },
       },
     };
   },

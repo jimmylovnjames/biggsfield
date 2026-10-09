@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { IMAGE_ASPECTS, IMAGE_MODELS, IMAGE_QUALITIES, IMAGE_RESOLUTIONS, IMAGE_STYLES, imageModel, MAX_IMAGE_INPUTS } from "../../shared/catalog";
+import { INPUT_IMAGE_USD, IMAGE_ASPECTS, IMAGE_MODELS, IMAGE_QUALITIES, IMAGE_RESOLUTIONS, IMAGE_STYLES, imageModel, MAX_IMAGE_INPUTS } from "../../shared/catalog";
 import type { ImageJobRequest } from "../../shared/types";
 import { api } from "../api";
 import { Feed } from "../components/Feed";
@@ -36,7 +36,7 @@ export function ImageStudio() {
 
   const model = imageModel(form.model) ?? IMAGE_MODELS[0];
   const sources = form.inputAssetIds.filter((id) => assets[id]);
-  const estimate = model.pricePerImage * form.n;
+  const estimate = model.pricePerImage * form.n + INPUT_IMAGE_USD * sources.length;
 
   const submit = async () => {
     setSubmitting(true);

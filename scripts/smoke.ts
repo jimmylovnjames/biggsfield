@@ -3,8 +3,8 @@
 // every request shape.
 //
 //   npm start                     # in one terminal, with XAI_API_KEY set
-//   npm run smoke                 # ~$0.08: enhance, image, image edit, image→video (Lite)
-//   npm run smoke -- --full       # ~$1: adds text/frames+keyframe/reference+voice (1.5), multi-image edit, edit + extend (classic)
+//   npm run smoke                 # ~$0.10: enhance, image, image edit, image→video (Lite)
+//   npm run smoke -- --full       # ~$0.95: adds text/frames+keyframe/reference+voice (1.5), multi-image edit, edit + extend (classic)
 //
 // Flags: --base http://127.0.0.1:8787   --max-usd 1.5   --user name:password (if APP_PASSWORD is set)
 import type { AppStatus, Asset, ImageJobRequest, Job, VideoJobRequest } from "../shared/types";

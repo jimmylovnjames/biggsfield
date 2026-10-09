@@ -9,6 +9,7 @@ import {
   IMAGE_RESOLUTIONS,
   MAX_IMAGE_INPUTS,
   VIDEO_ASPECTS,
+  utf8Bytes,
   VIDEO_LIMITS,
   videoModel,
 } from "../shared/catalog";
@@ -64,11 +65,20 @@ export function buildImageRequest(req: ImageJobRequest, resolve: ResolveMedia): 
   return { path: "/v1/images/edits", body, finalPrompt, inputAssetIds: inputs };
 }
 
-export function buildVideoRequest(req: VideoJobRequest, resolve: ResolveMedia): BuiltRequest {
+/** Highest `<NAME_n>` index used in a prompt, or -1. */
+function maxTag(prompt: string, name: "IMAGE" | "AUDIO") {
+  let max = -1;
+  for (const m of prompt.matchAll(new RegExp(`<${name}_(\\d+)>`, "g"))) max = Math.max(max, Number(m[1]));
+  return max;
+}
+
+export function buildVideoRequest(req: VideoJobRequest, resolve: ResolveMedia, durationOf: (assetId: string) => number | undefined = () => undefined): BuiltRequest {
   const model = videoModel(req.model) ?? fail(`Unknown video model: ${req.model}`);
   if (!model.modes.includes(req.mode)) fail(`${model.label} does not support ${req.mode} mode`);
 
   const finalPrompt = composeVideoPrompt(req.prompt ?? "", req.cameraId, req.effectId);
+  const bytes = utf8Bytes(finalPrompt);
+  if (bytes > VIDEO_LIMITS.maxPromptBytes) fail(`Prompt is too long: ${bytes}/${VIDEO_LIMITS.maxPromptBytes} bytes including camera/effect presets`);
   const body: Record<string, unknown> = { model: model.id };
   if (finalPrompt) body.prompt = finalPrompt;
   const inputAssetIds: string[] = [];
@@ -155,6 +165,12 @@ export function buildVideoRequest(req: VideoJobRequest, resolve: ResolveMedia): 
         if (model.id === "grok-imagine-video") fail("Imagine Video (classic) can't combine a start frame with references");
         body.image = media(req.imageAssetId, "image", "Start frame");
       }
+      // A pinned start frame takes <IMAGE_0>; references then start at <IMAGE_1>.
+      const images = refs.length + (req.imageAssetId ? 1 : 0);
+      const imageTag = maxTag(finalPrompt, "IMAGE");
+      if (imageTag >= images) fail(`Prompt mentions <IMAGE_${imageTag}> but only ${images} image${images === 1 ? "" : "s"} (<IMAGE_0>–<IMAGE_${images - 1}>) are attached`);
+      const audioTag = maxTag(finalPrompt, "AUDIO");
+      if (audioTag >= voices.length) fail(`Prompt mentions <AUDIO_${audioTag}> but only ${voices.length} voice${voices.length === 1 ? "" : "s"} selected`);
       checkDuration(VIDEO_LIMITS.minDuration, model.referenceMaxDuration);
       checkAspect();
       checkResolution(model.referenceResolutions);
@@ -164,12 +180,18 @@ export function buildVideoRequest(req: VideoJobRequest, resolve: ResolveMedia): 
     case "edit": {
       if (!finalPrompt) fail("Describe the edit");
       body.video = media(req.videoAssetId, "video", "Source video");
+      const src = durationOf(req.videoAssetId!);
+      if (src !== undefined && src > VIDEO_LIMITS.editMaxSource + VIDEO_LIMITS.durationSlack) fail(`Edit sources must be ≤ ${VIDEO_LIMITS.editMaxSource}s (this one is ${src.toFixed(1)}s)`);
       // duration / aspect_ratio / resolution are not supported for edits.
       return { path: "/v1/videos/edits", body, finalPrompt, inputAssetIds };
     }
     case "extend": {
       if (!finalPrompt) fail("Describe what happens next");
       body.video = media(req.videoAssetId, "video", "Source video");
+      const src = durationOf(req.videoAssetId!);
+      if (src !== undefined && (src < VIDEO_LIMITS.extendMinSource || src > VIDEO_LIMITS.extendMaxSource + VIDEO_LIMITS.durationSlack)) {
+        fail(`Extend sources must be ${VIDEO_LIMITS.extendMinSource}-${VIDEO_LIMITS.extendMaxSource}s (this one is ${src.toFixed(1)}s)`);
+      }
       checkDuration(VIDEO_LIMITS.extendMin, VIDEO_LIMITS.extendMax);
       return { path: "/v1/videos/extensions", body, finalPrompt, inputAssetIds };
     }

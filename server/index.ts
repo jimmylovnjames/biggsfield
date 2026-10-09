@@ -7,7 +7,7 @@ import type { ServerEvent } from "../shared/types";
 import { appStatus, emit, events, resumeJobs, submitImageJob, submitVideoJob } from "./jobs";
 import { ValidationError } from "./payloads";
 import * as store from "./store";
-import { MOCK, TEXT_MODEL, xai, XaiError } from "./xai";
+import { MOCK, TEXT_MODEL, TEXT_REASONING, xai, XaiError } from "./xai";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const HOST = process.env.HOST ?? "127.0.0.1";
@@ -143,7 +143,7 @@ app.delete("/api/assets/:id", (req, res) => {
 
 const ENHANCE_SYSTEM = {
   image:
-    "You rewrite prompts for an AI image generator. Keep the user's subject and intent. Add concrete detail: composition, lens, lighting, palette, texture, mood. One paragraph, under 90 words. Output only the prompt.",
+    "You rewrite prompts for an AI image generator. Keep the user's subject and intent; if it is an edit instruction, keep it an edit instruction. Add concrete detail: composition, lens, lighting, palette, texture, mood. Keep any <IMAGE_n> tags exactly. One paragraph, under 90 words. Output only the prompt.",
   video:
     "You rewrite prompts for an AI video generator. Keep the user's subject and intent. Describe the subject, the action as it unfolds over time, the setting, lighting, camera framing and movement, and ambient sound. Keep any <IMAGE_n> or <AUDIO_n> tags exactly. One paragraph, under 120 words. Output only the prompt.",
 };
@@ -155,12 +155,22 @@ app.post(
     const prompt = String(req.body?.prompt ?? "").trim();
     const kind = req.body?.kind === "video" ? "video" : "image";
     if (!prompt) throw new ValidationError("Write a prompt first");
-    const out = await xai.post("/v1/chat/completions", {
+    const body: Record<string, unknown> = {
       model: TEXT_MODEL,
       messages: [
         { role: "system", content: ENHANCE_SYSTEM[kind] },
         { role: "user", content: `Prompt: ${prompt}` },
       ],
+    };
+    // A rewrite doesn't need thinking: "none" cut latency ~5x and cost ~4x on grok-4.3.
+    if (TEXT_REASONING) body.reasoning_effort = TEXT_REASONING;
+    const out = await xai.post("/v1/chat/completions", body).catch((err: XaiError) => {
+      // Models without reasoning controls reject the field; retry once without it.
+      if (TEXT_REASONING && err.status === 400 && /reasoning/i.test(err.message)) {
+        delete body.reasoning_effort;
+        return xai.post("/v1/chat/completions", body);
+      }
+      throw err;
     });
     const text = String(out?.choices?.[0]?.message?.content ?? "").trim().replace(/^["']|["']$/g, "");
     if (!text) throw new XaiError("Empty response from the text model");

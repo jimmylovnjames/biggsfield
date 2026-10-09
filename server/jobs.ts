@@ -107,7 +107,7 @@ async function runImageJob(id: string, built: BuiltRequest) {
 // ---------------------------------------------------------------- videos
 
 export function submitVideoJob(req: VideoJobRequest): Job {
-  const built = buildVideoRequest(req, resolveMedia);
+  const built = buildVideoRequest(req, resolveMedia, (assetId) => store.getAsset(assetId)?.duration);
   const job = createJob("video", req, built);
   void startVideoJob(job.id, built);
   return job;
@@ -126,12 +126,13 @@ async function startVideoJob(id: string, built: BuiltRequest) {
 }
 
 async function pollVideo(id: string) {
-  const started = store.getJob(id)?.createdAt ?? Date.now();
+  // Measured from when this poller started (not job creation) so a job resumed after downtime
+  // always gets at least one status check and a finished render is still downloaded.
+  const started = Date.now();
   let transientErrors = 0;
   for (;;) {
     const job = store.getJob(id);
     if (!job || job.status !== "running" || !job.xaiRequestId) return;
-    if (Date.now() - started > VIDEO_TIMEOUT_MS) throw new XaiError("Timed out waiting for xAI (30 min)");
 
     let data: any;
     try {
@@ -167,6 +168,7 @@ async function pollVideo(id: string) {
       throw new XaiError(e?.message ? `${e.message}${e.code ? ` (${e.code})` : ""}` : `Video generation ${data.status}`);
     }
     if (typeof data.progress === "number" && data.progress !== job.progress) change(id, { progress: data.progress });
+    if (Date.now() - started > VIDEO_TIMEOUT_MS) throw new XaiError("Timed out waiting for xAI (30 min)");
     await new Promise((r) => setTimeout(r, POLL_MS));
   }
 }

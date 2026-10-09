@@ -126,3 +126,65 @@ describe("video requests", () => {
     assert.throws(() => buildVideoRequest({ mode: "text", prompt: "", model: v15 }, resolve), /Prompt is required/);
   });
 });
+
+describe("live-API guards", () => {
+  const v15 = "grok-imagine-video-1.5";
+
+  it("rejects prompts over 4096 UTF-8 bytes, presets included", () => {
+    const ascii = "a".repeat(4000);
+    assert.doesNotThrow(() => buildVideoRequest({ mode: "text", prompt: ascii, model: v15 }, resolve));
+    assert.throws(() => buildVideoRequest({ mode: "text", prompt: ascii, model: v15, cameraId: "dolly-zoom", effectId: "disintegrate" }, resolve), /bytes/);
+    assert.throws(() => buildVideoRequest({ mode: "text", prompt: "灯".repeat(1400), model: v15 }, resolve), /4200\/4096 bytes/);
+  });
+
+  it("reference tags must point at attached media; a pinned start frame owns <IMAGE_0>", () => {
+    const base = { mode: "reference" as const, model: v15, referenceAssetIds: ["r1", "r2"] };
+    assert.doesNotThrow(() => buildVideoRequest({ ...base, prompt: "<IMAGE_0> hands <IMAGE_1> a cup" }, resolve));
+    assert.throws(() => buildVideoRequest({ ...base, prompt: "<IMAGE_2> waves" }, resolve), /<IMAGE_2>.*only 2 images/);
+    assert.doesNotThrow(() => buildVideoRequest({ ...base, imageAssetId: "s", prompt: "open on <IMAGE_0>; <IMAGE_2> waves" }, resolve));
+    assert.throws(() => buildVideoRequest({ ...base, prompt: "<IMAGE_0> says hi with <AUDIO_0>" }, resolve), /<AUDIO_0>/);
+    assert.doesNotThrow(() => buildVideoRequest({ ...base, voiceIds: ["eve"], prompt: "<IMAGE_0> says hi with <AUDIO_0>" }, resolve));
+  });
+
+  it("checks edit/extend source length when the duration is known", () => {
+    const dur = (d: number) => () => d;
+    const edit = { mode: "edit" as const, prompt: "night", model: "grok-imagine-video", videoAssetId: "v" };
+    assert.doesNotThrow(() => buildVideoRequest(edit, resolve, dur(8.74)));
+    assert.throws(() => buildVideoRequest(edit, resolve, dur(10)), /≤ 8.7s/);
+    const extend = { mode: "extend" as const, prompt: "more", model: "grok-imagine-video", videoAssetId: "v", duration: 4 };
+    assert.throws(() => buildVideoRequest(extend, resolve, dur(1.5)), /2-15s/);
+    assert.throws(() => buildVideoRequest(extend, resolve, dur(16)), /2-15s/);
+    assert.doesNotThrow(() => buildVideoRequest(extend, resolve, dur(15.04)));
+    assert.doesNotThrow(() => buildVideoRequest(extend, resolve)); // unknown duration: let xAI decide
+  });
+});
+
+describe("mp4Duration", () => {
+  const box = (type: string, payload: Buffer) => {
+    const head = Buffer.alloc(8);
+    head.writeUInt32BE(8 + payload.length);
+    head.write(type, 4, "ascii");
+    return Buffer.concat([head, payload]);
+  };
+  const mvhd = (version: 0 | 1, timescale: number, duration: number) => {
+    const p = Buffer.alloc(version ? 32 : 20);
+    p[0] = version;
+    if (version) {
+      p.writeUInt32BE(timescale, 20);
+      p.writeBigUInt64BE(BigInt(duration), 24);
+    } else {
+      p.writeUInt32BE(timescale, 12);
+      p.writeUInt32BE(duration, 16);
+    }
+    return box("mvhd", p);
+  };
+
+  it("reads v0 and v1 mvhd, with moov after mdat", async () => {
+    const { mp4Duration } = await import("./store");
+    const ftyp = box("ftyp", Buffer.from("isom\0\0\0\0isom"));
+    assert.equal(mp4Duration(Buffer.concat([ftyp, box("mdat", Buffer.alloc(64)), box("moov", mvhd(0, 1000, 4042))])), 4.042);
+    assert.equal(mp4Duration(Buffer.concat([ftyp, box("moov", mvhd(1, 24000, 98000))])), 4.083);
+    assert.equal(mp4Duration(Buffer.concat([ftyp, box("mdat", Buffer.alloc(8))])), undefined);
+    assert.equal(mp4Duration(Buffer.from("garbage")), undefined);
+  });
+});

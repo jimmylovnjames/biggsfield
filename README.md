@@ -16,6 +16,8 @@ Development (hot reload on both sides): `npm run dev` → http://localhost:5173
 
 Requires Node 20.12 or newer.
 
+**Verify against the real API:** with the server running on your key, `npm run smoke` runs enhance → image → image edit → image-to-video (about $0.10). `npm run smoke -- --full` also covers text-to-video, frames with a keyframe, references with a voice, multi-image edit, video edit and extend (about $0.95). Every mode passed live on 2026-10-09.
+
 ## What you get
 
 | | |
@@ -24,7 +26,7 @@ Requires Node 20.12 or newer.
 | **Video studio** | Six modes: **Text**, **Image** (animate a still), **Frames** (start/end frame plus up to 4 timed keyframes), **References** (up to 14 images and 3 lip-synced preset voices), **Edit** (restyle a clip ≤ 8.7s), and **Extend** (add 2–10s). |
 | **Camera motions** | 25 presets with animated previews: dolly, crash zoom, dolly zoom, 360 orbit, FPV drone, bullet time, whip pan, snorricam, crane, hyperlapse and more. |
 | **Effects** | 14 presets: disintegrate, levitate, set on fire, freeze, melt, glitch, paparazzi, explosion, turn to metal, and others. |
-| **Prompt enhancer** | One-click rewrite using a Grok text model (`grok-4.3` by default). |
+| **Prompt enhancer** | One-click rewrite using a Grok text model (`grok-4.3` by default, `reasoning_effort: none`, about 2s). It keeps `<IMAGE_n>`/`<AUDIO_n>` tags. |
 | **Library** | Every output is downloaded to your disk, because xAI's URLs are temporary. Filter, search, favorite, and download. One click hands any image to Animate, Edit, Start/End frame, or Reference, and any video to Extend or Edit. You can also drag outputs onto any input slot. |
 | **Live jobs** | Renders run on the server and stream progress over SSE. Closing the tab doesn't stop them, and a server restart resumes polling for videos that were in flight. |
 | **Cost tracking** | Each Generate button shows a list-price estimate. Each finished job shows the actual cost xAI reports (`usage.cost_in_usd_ticks`), and the header shows the running total. |
@@ -54,13 +56,16 @@ browser (React/Vite) ──REST + SSE──▶ Express server ──▶ api.x.ai
 | `APP_PASSWORD` | — | HTTP basic-auth password; any username works |
 | `DATA_DIR` | `./data` | |
 | `XAI_TEXT_MODEL` | `grok-4.3` | Used by the prompt enhancer |
+| `XAI_TEXT_REASONING` | `none` | `reasoning_effort` for the enhancer; leave it empty to omit the field |
 | `XAI_MOCK` | `0` | `1` turns on mock mode |
 
 ## Caveats
 
 - **Exposing it:** anyone who can reach the server can spend your xAI credits. It binds to localhost by default. If you change `HOST`, set `APP_PASSWORD` and put it behind HTTPS.
 - **Hosting:** it isn't serverless-friendly. It needs a long-running Node process and a writable disk, so a VPS, Docker host, or your own machine works; Vercel and Netlify functions don't.
-- **Pricing:** estimates use the flat per-second and per-image prices from xAI's models page. xAI notes that video pricing can vary by resolution, so treat the reported actual cost as the truth.
+- **Pricing:** estimates use xAI's list prices plus two input charges that aren't in the docs but matched every live job exactly: $0.01 per input image and $0.01 per second of input video. Video edit and extend are billed for the added seconds plus the source. The cost xAI reports for each job is the number to trust.
+- **API key scopes:** a key restricted to the image and video endpoints works for everything except Enhance, which needs chat access.
+- **Reference tags:** with a pinned start frame, the start frame is `<IMAGE_0>` and references start at `<IMAGE_1>`. The UI renumbers tags for you, and the server rejects tags that point at nothing.
 - **Voices:** the voice list (`eve`, `ara`, `leo`, `rex`, `sal`) mirrors xAI's TTS roster. An unknown voice returns an error listing the valid IDs.
 
 ## Scripts

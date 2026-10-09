@@ -99,7 +99,17 @@ export const VIDEO_LIMITS = {
   extendDefault: 6,
   maxKeyframes: 4,
   maxVoices: 3,
+  maxPromptBytes: 4096,
+  /** Container durations run ~1 frame over the nominal length (a "2s" clip is 2.04s). */
+  durationSlack: 0.05,
 };
+
+// Not in xAI's docs, but exact across every live job on 2026-10-09: inputs are billed on top
+// of the list price at $0.01 per input image and $0.01 per second of input video.
+export const INPUT_IMAGE_USD = 0.01;
+export const INPUT_VIDEO_USD_PER_SECOND = 0.01;
+
+export const utf8Bytes = (s: string) => new TextEncoder().encode(s).length;
 
 // Preset voices share the TTS roster; unknown ids come back as a 400 listing valid ones.
 export const VOICES = ["eve", "ara", "leo", "rex", "sal"];

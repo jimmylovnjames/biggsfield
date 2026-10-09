@@ -150,12 +150,15 @@ export function PromptBox({
   kind,
   placeholder,
   optional,
+  counter,
 }: {
   value: string;
   onChange: (v: string) => void;
   kind: "image" | "video";
   placeholder: string;
   optional?: boolean;
+  /** Replaces the default character counter, e.g. a byte count against an API cap. */
+  counter?: ReactNode;
 }) {
   const { toast, status } = useApp();
   const [busy, setBusy] = useState(false);
@@ -174,7 +177,10 @@ export function PromptBox({
     <div className="prompt">
       <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={5} maxLength={4000} aria-label="Prompt" />
       <div className="prompt-bar">
-        <span className="muted small">{optional ? "Optional · " : ""}{value.length}/4000</span>
+        <span className="muted small">
+          {optional ? "Optional · " : ""}
+          {counter ?? `${value.length}/4000`}
+        </span>
         <button type="button" className="btn ghost sm" onClick={enhance} disabled={busy || !value.trim() || !status?.hasKey} title={`Rewrite with ${status?.textModel ?? "Grok"}`}>
           <Icon name="sparkle" size={15} /> {busy ? "Enhancing…" : "Enhance"}
         </button>

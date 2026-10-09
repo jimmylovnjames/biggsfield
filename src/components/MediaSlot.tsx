@@ -136,12 +136,15 @@ export function MultiSlot({
   max,
   label,
   onTag,
+  tagOffset = 0,
 }: {
   ids: string[];
   onChange: (ids: string[]) => void;
   max: number;
   label: string;
   onTag?: (tag: string) => void;
+  /** First tag index; 1 when a pinned start frame already owns <IMAGE_0>. */
+  tagOffset?: number;
 }) {
   const { assets } = useApp();
   const input = useRef<HTMLInputElement>(null);
@@ -155,8 +158,8 @@ export function MultiSlot({
       {live.map((id, i) => (
         <div key={id} className="mini">
           <img src={mediaUrl(assets[id])} alt="" />
-          <button type="button" className="tag" onClick={() => onTag?.(`<IMAGE_${i}>`)} title="Insert tag into prompt">
-            {`<IMAGE_${i}>`}
+          <button type="button" className="tag" onClick={() => onTag?.(`<IMAGE_${i + tagOffset}>`)} title="Insert tag into prompt">
+            {`<IMAGE_${i + tagOffset}>`}
           </button>
           <button type="button" className="icon-btn xs" onClick={() => onChange(live.filter((x) => x !== id))} aria-label="Remove image">
             <Icon name="close" size={12} />

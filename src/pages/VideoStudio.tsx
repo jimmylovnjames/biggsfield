@@ -1,5 +1,18 @@
 import { useEffect, useState } from "react";
-import { CAMERA_MOTIONS, VIDEO_ASPECTS, VIDEO_EFFECTS, VIDEO_LIMITS, VIDEO_MODELS, VIDEO_MODES, videoModel, VOICES } from "../../shared/catalog";
+import {
+  CAMERA_MOTIONS,
+  composeVideoPrompt,
+  INPUT_IMAGE_USD,
+  INPUT_VIDEO_USD_PER_SECOND,
+  utf8Bytes,
+  VIDEO_ASPECTS,
+  VIDEO_EFFECTS,
+  VIDEO_LIMITS,
+  VIDEO_MODELS,
+  VIDEO_MODES,
+  videoModel,
+  VOICES,
+} from "../../shared/catalog";
 import type { KeyframeInput, VideoJobRequest, VideoMode } from "../../shared/types";
 import { api } from "../api";
 import { Feed } from "../components/Feed";
@@ -42,6 +55,13 @@ const DEFAULTS: VideoForm = {
   voiceIds: [],
 };
 
+/** Renumber <IMAGE_n> tags when a pinned start frame (which owns <IMAGE_0>) comes or goes. */
+const shiftImageTags = (prompt: string, delta: 1 | -1) =>
+  prompt.replace(/<IMAGE_(\d+)>( ?)/g, (_m, n: string, space: string) => (Number(n) + delta < 0 ? "" : `<IMAGE_${Number(n) + delta}>${space}`));
+
+const maxTag = (prompt: string, name: "IMAGE" | "AUDIO") =>
+  Math.max(-1, ...[...prompt.matchAll(new RegExp(`<${name}_(\\d+)>`, "g"))].map((m) => Number(m[1])));
+
 const modelsFor = (mode: VideoMode) => VIDEO_MODELS.filter((m) => m.modes.includes(mode));
 
 /** Keep model/resolution/duration valid whenever the mode or model changes. */
@@ -62,6 +82,18 @@ export function VideoStudio() {
   const [submitting, setSubmitting] = useState(false);
   const set = <K extends keyof VideoForm>(k: K, v: VideoForm[K]) => setForm((f) => normalize({ ...f, [k]: v }));
   const appendToPrompt = (t: string) => set("prompt", `${form.prompt}${form.prompt && !form.prompt.endsWith(" ") ? " " : ""}${t} `);
+
+  // In reference mode a pinned start frame is <IMAGE_0> and pushes references to <IMAGE_1>+, so keep
+  // tags already in the prompt pointing at the same pictures when the start frame comes or goes.
+  const pinsStart = (f: VideoForm) => f.model !== "grok-imagine-video" && !!f.refStartAssetId && !!assets[f.refStartAssetId];
+  const updatePinned = (patch: Partial<VideoForm>) =>
+    setForm((f) => {
+      const next = normalize({ ...f, ...patch });
+      const before = pinsStart(f);
+      const after = pinsStart(next);
+      if (before === after || next.mode !== "reference") return next;
+      return { ...next, prompt: shiftImageTags(next.prompt, after ? 1 : -1) };
+    });
 
   useEffect(() => {
     const h = takeHandoff("video");
@@ -125,13 +157,26 @@ export function VideoStudio() {
   if (mode === "reference" && !hasPrompt) blocker = "Write a prompt";
   if ((mode === "edit" || mode === "extend") && !videoId) blocker = "Add a source video";
   if ((mode === "edit" || mode === "extend") && !form.prompt.trim()) blocker = mode === "edit" ? "Describe the edit" : "Describe what happens next";
-  if (mode === "edit" && source?.duration && source.duration > VIDEO_LIMITS.editMaxSource + 0.05) blocker = `Edit sources must be ≤ ${VIDEO_LIMITS.editMaxSource}s`;
-  if (mode === "extend" && source?.duration && (source.duration < VIDEO_LIMITS.extendMinSource || source.duration > VIDEO_LIMITS.extendMaxSource + 0.05)) {
-    blocker = `Extend sources must be ${VIDEO_LIMITS.extendMinSource}-${VIDEO_LIMITS.extendMaxSource}s`;
+  const slack = VIDEO_LIMITS.durationSlack;
+  if (mode === "edit" && source?.duration && source.duration > VIDEO_LIMITS.editMaxSource + slack) blocker = `Edit sources must be ≤ ${VIDEO_LIMITS.editMaxSource}s (this is ${source.duration.toFixed(1)}s)`;
+  if (mode === "extend" && source?.duration && (source.duration < VIDEO_LIMITS.extendMinSource || source.duration > VIDEO_LIMITS.extendMaxSource + slack)) {
+    blocker = `Extend sources must be ${VIDEO_LIMITS.extendMinSource}-${VIDEO_LIMITS.extendMaxSource}s (this is ${source.duration.toFixed(1)}s)`;
   }
+  if (mode === "reference") {
+    const images = refs.length + (refStartId ? 1 : 0);
+    const imageTag = maxTag(form.prompt, "IMAGE");
+    const audioTag = maxTag(form.prompt, "AUDIO");
+    if (imageTag >= images) blocker = `<IMAGE_${imageTag}> has no image attached`;
+    if (audioTag >= voices.length) blocker = `<AUDIO_${audioTag}> has no voice selected`;
+  }
+  const promptBytes = utf8Bytes(composeVideoPrompt(form.prompt, mode === "edit" ? undefined : form.cameraId, form.effectId));
+  if (promptBytes > VIDEO_LIMITS.maxPromptBytes) blocker = `Prompt too long (${promptBytes}/${VIDEO_LIMITS.maxPromptBytes} bytes)`;
 
   const seconds = mode === "edit" ? (source?.duration ?? VIDEO_LIMITS.editMaxSource) : mode === "extend" ? form.extendDuration : form.duration;
-  const estimate = seconds * model.pricePerSecond;
+  const inputImages =
+    mode === "image" ? (imageId ? 1 : 0) : mode === "frames" ? (imageId ? 1 : 0) + (lastId ? 1 : 0) + keyframes.length : mode === "reference" ? refs.length + (refStartId ? 1 : 0) : 0;
+  const sourceSeconds = mode === "edit" || mode === "extend" ? (source?.duration ?? (mode === "edit" ? VIDEO_LIMITS.editMaxSource : 0)) : 0;
+  const estimate = seconds * model.pricePerSecond + inputImages * INPUT_IMAGE_USD + sourceSeconds * INPUT_VIDEO_USD_PER_SECOND;
   const pinned = mode === "frames" || mode === "reference";
   const resolutions = pinned ? model.referenceResolutions : model.resolutions;
   const maxDuration = mode === "reference" ? model.referenceMaxDuration : VIDEO_LIMITS.maxDuration;
@@ -255,7 +300,7 @@ export function VideoStudio() {
           {mode === "reference" && (
             <>
               <Section title="Reference images" aside={<span className="muted small">Characters, outfits, products, places</span>}>
-                <MultiSlot ids={refs} onChange={(ids) => set("referenceAssetIds", ids)} max={model.maxReferenceImages} label="Add" onTag={appendToPrompt} />
+                <MultiSlot ids={refs} onChange={(ids) => set("referenceAssetIds", ids)} max={model.maxReferenceImages} label="Add" onTag={appendToPrompt} tagOffset={refStartId ? 1 : 0} />
               </Section>
               {model.voices && (
                 <Section title="Voices" aside={<span className="muted small">Up to {VIDEO_LIMITS.maxVoices} · lip-synced</span>}>
@@ -289,7 +334,15 @@ export function VideoStudio() {
               )}
               {model.id !== "grok-imagine-video" && (
                 <Section title="Start frame" aside={<span className="muted small">Optional</span>}>
-                  <MediaSlot kind="image" assetId={refStartId} onChange={(id) => set("refStartAssetId", id)} label="Pin first frame" />
+                  <MediaSlot
+                    kind="image"
+                    assetId={refStartId}
+                    onChange={(id) => updatePinned({ refStartAssetId: id })}
+                    label="Pin first frame"
+                    hint="Becomes <IMAGE_0>; references shift to <IMAGE_1>+"
+                    tag="<IMAGE_0>"
+                    onTag={() => appendToPrompt("<IMAGE_0>")}
+                  />
                 </Section>
               )}
             </>
@@ -307,13 +360,16 @@ export function VideoStudio() {
               onChange={(v) => set("prompt", v)}
               kind="video"
               optional={promptOptional}
+              counter={`${promptBytes}/${VIDEO_LIMITS.maxPromptBytes} bytes`}
               placeholder={
                 mode === "edit"
                   ? "What should change? Say what must stay the same."
                   : mode === "extend"
                     ? "What happens next?"
                     : mode === "reference"
-                      ? "The person from <IMAGE_0> walks onto the stage wearing the jacket from <IMAGE_1>…"
+                      ? refStartId
+                        ? "Open on <IMAGE_0>; the person from <IMAGE_1> walks in wearing the jacket from <IMAGE_2>…"
+                        : "The person from <IMAGE_0> walks onto the stage wearing the jacket from <IMAGE_1>…"
                       : "Describe the shot: subject, action, setting, light, sound…"
               }
             />
@@ -330,7 +386,7 @@ export function VideoStudio() {
           </Section>
 
           <Section title="Model">
-            <Select value={form.model} onChange={(v) => set("model", v)} options={modelsFor(mode).map((m) => ({ id: m.id, label: m.label, note: `${m.note} · $${m.pricePerSecond}/s` }))} />
+            <Select value={form.model} onChange={(v) => updatePinned({ model: v })} options={modelsFor(mode).map((m) => ({ id: m.id, label: m.label, note: `${m.note} · $${m.pricePerSecond}/s` }))} />
           </Section>
 
           {mode === "extend" ? (
